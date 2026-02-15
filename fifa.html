@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Football Skills Challenge</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a3619;
+      --panel: #122b1a;
+      --line: #cbe5c2;
+      --accent: #44d062;
+      --danger: #e95f5f;
+      --text: #f2ffe9;
+    }
+
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: radial-gradient(circle at top, #0f5226 0, #062611 45%, #03180b 100%);
+      color: var(--text);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+    }
+
+    .wrap {
+      display: grid;
+      gap: 14px;
+      width: min(920px, 96vw);
+    }
+
+    .hud {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(100px, 1fr));
+      gap: 8px;
+      background: rgba(2, 20, 9, 0.76);
+      border: 1px solid #2f5f3f;
+      border-radius: 12px;
+      padding: 10px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    }
+
+    .tile {
+      background: #163423;
+      border: 1px solid #2b6641;
+      border-radius: 10px;
+      padding: 8px;
+      text-align: center;
+      font-weight: 600;
+      font-size: 0.95rem;
+    }
+
+    canvas {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      border-radius: 14px;
+      border: 2px solid #c8e9bb;
+      background: var(--bg);
+      box-shadow: 0 24px 50px rgba(0, 0, 0, 0.5);
+    }
+
+    .skills {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 8px;
+    }
+
+    button {
+      cursor: pointer;
+      border: 1px solid #4f9a5c;
+      background: linear-gradient(#1f6933, #185229);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 10px;
+      font-weight: 700;
+      transition: transform .08s ease, opacity .2s ease;
+    }
+
+    button:active { transform: translateY(1px); }
+
+    button[disabled] {
+      opacity: .45;
+      cursor: not-allowed;
+    }
+
+    .help {
+      background: rgba(2, 20, 9, 0.65);
+      border: 1px solid #2f5f3f;
+      border-radius: 12px;
+      padding: 10px;
+      font-size: .92rem;
+      line-height: 1.35;
+    }
+
+    .msg {
+      min-height: 1.3rem;
+      color: #fcefa8;
+      font-weight: 700;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hud">
+      <div class="tile">Score: <span id="score">0</span></div>
+      <div class="tile">Shots: <span id="shots">0</span></div>
+      <div class="tile">Saves: <span id="saves">0</span></div>
+      <div class="tile">Time: <span id="time">90</span>s</div>
+    </section>
+
+    <canvas id="game" width="960" height="540"></canvas>
+
+    <div class="msg" id="msg">Move with arrows/WASD, press Space to shoot.</div>
+
+    <section class="skills" id="skills"></section>
+
+    <section class="help">
+      <strong>5 Skills:</strong> Sprint Burst, Curve Shot, Shield Dribble, Time Freeze, Mega Kick.<br />
+      Score as many goals as possible before time runs out.
+    </section>
+  </main>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const scoreEl = document.getElementById('score');
+    const shotsEl = document.getElementById('shots');
+    const savesEl = document.getElementById('saves');
+    const timeEl = document.getElementById('time');
+    const msgEl = document.getElementById('msg');
+    const skillsEl = document.getElementById('skills');
+
+    const keys = new Set();
+
+    const game = {
+      score: 0,
+      shots: 0,
+      saves: 0,
+      timeLeft: 90,
+      over: false,
+      messageTimer: 0,
+      player: { x: 200, y: 270, r: 18, speed: 220 },
+      ball: { x: 240, y: 270, r: 10, vx: 0, vy: 0, attached: true },
+      keeper: { x: 860, y: 270, w: 20, h: 100, speed: 150 },
+      skillState: {
+        sprintBurst: 0,
+        curveShot: 0,
+        shieldDribble: 0,
+        timeFreeze: 0,
+        megaKick: 0,
+      }
+    };
+
+    const skills = [
+      { id: 'sprintBurst', label: 'Sprint Burst (1)', key: '1', duration: 4, cooldown: 10, effect: 'Move 80% faster' },
+      { id: 'curveShot', label: 'Curve Shot (2)', key: '2', duration: 1, cooldown: 8, effect: 'Shot curves upward/downward' },
+      { id: 'shieldDribble', label: 'Shield Dribble (3)', key: '3', duration: 5, cooldown: 12, effect: 'Keeper cannot steal attached ball' },
+      { id: 'timeFreeze', label: 'Time Freeze (4)', key: '4', duration: 2.5, cooldown: 14, effect: 'Keeper movement stops' },
+      { id: 'megaKick', label: 'Mega Kick (5)', key: '5', duration: 1, cooldown: 9, effect: 'Next shot has extra power' },
+    ].map(s => ({ ...s, cd: 0 }));
+
+    function uiMessage(text, ttl = 2) {
+      msgEl.textContent = text;
+      game.messageTimer = ttl;
+    }
+
+    function renderSkillButtons() {
+      skillsEl.innerHTML = '';
+      for (const skill of skills) {
+        const btn = document.createElement('button');
+        const cd = skill.cd > 0 ? ` (${skill.cd.toFixed(1)}s)` : '';
+        btn.textContent = `${skill.label}${cd}`;
+        btn.title = skill.effect;
+        btn.disabled = skill.cd > 0 || game.over;
+        btn.onclick = () => triggerSkill(skill.id);
+        skillsEl.appendChild(btn);
+      }
+    }
+
+    function triggerSkill(id) {
+      const skill = skills.find(s => s.id === id);
+      if (!skill || skill.cd > 0 || game.over) return;
+      skill.cd = skill.cooldown;
+      game.skillState[id] = skill.duration;
+      uiMessage(`${skill.label.split(' (')[0]} activated!`);
+      renderSkillButtons();
+    }
+
+    function resetBall() {
+      game.ball.attached = true;
+      game.ball.vx = 0;
+      game.ball.vy = 0;
+      game.player.x = 220;
+      game.player.y = 270;
+      game.ball.x = game.player.x + 30;
+      game.ball.y = game.player.y;
+    }
+
+    function shootBall() {
+      if (!game.ball.attached || game.over) return;
+      game.shots++;
+      const toGoalX = 900 - game.ball.x;
+      const toGoalY = 270 - game.ball.y;
+      const len = Math.hypot(toGoalX, toGoalY) || 1;
+      let power = 500;
+      if (game.skillState.megaKick > 0) {
+        power = 760;
+        game.skillState.megaKick = 0;
+      }
+      game.ball.vx = (toGoalX / len) * power;
+      game.ball.vy = (toGoalY / len) * power;
+      if (game.skillState.curveShot > 0) {
+        game.ball.vy += (Math.random() > 0.5 ? -1 : 1) * 170;
+        game.skillState.curveShot = 0;
+      }
+      game.ball.attached = false;
+    }
+
+    function update(dt) {
+      if (game.over) return;
+
+      game.timeLeft -= dt;
+      if (game.timeLeft <= 0) {
+        game.timeLeft = 0;
+        game.over = true;
+        uiMessage(`Full time! Final score: ${game.score}`);
+      }
+
+      for (const skill of skills) {
+        skill.cd = Math.max(0, skill.cd - dt);
+      }
+      for (const key in game.skillState) {
+        game.skillState[key] = Math.max(0, game.skillState[key] - dt);
+      }
+
+      const speedBoost = game.skillState.sprintBurst > 0 ? 1.8 : 1;
+      const move = game.player.speed * speedBoost;
+      if (keys.has('arrowup') || keys.has('w')) game.player.y -= move * dt;
+      if (keys.has('arrowdown') || keys.has('s')) game.player.y += move * dt;
+      if (keys.has('arrowleft') || keys.has('a')) game.player.x -= move * dt;
+      if (keys.has('arrowright') || keys.has('d')) game.player.x += move * dt;
+
+      game.player.x = Math.max(30, Math.min(700, game.player.x));
+      game.player.y = Math.max(40, Math.min(canvas.height - 40, game.player.y));
+
+      if (game.ball.attached) {
+        game.ball.x = game.player.x + 26;
+        game.ball.y = game.player.y;
+      } else {
+        game.ball.x += game.ball.vx * dt;
+        game.ball.y += game.ball.vy * dt;
+        game.ball.vx *= 0.994;
+        game.ball.vy *= 0.994;
+
+        if (game.ball.y < game.ball.r || game.ball.y > canvas.height - game.ball.r) {
+          game.ball.vy *= -0.9;
+          game.ball.y = Math.max(game.ball.r, Math.min(canvas.height - game.ball.r, game.ball.y));
+        }
+
+        // Keeper movement unless frozen
+        if (game.skillState.timeFreeze <= 0) {
+          const target = game.ball.attached ? game.player.y : game.ball.y;
+          if (target > game.keeper.y + 2) game.keeper.y += game.keeper.speed * dt;
+          if (target < game.keeper.y - 2) game.keeper.y -= game.keeper.speed * dt;
+          game.keeper.y = Math.max(70, Math.min(canvas.height - 70, game.keeper.y));
+        }
+
+        // Collision with keeper
+        const inX = game.ball.x + game.ball.r > game.keeper.x - game.keeper.w / 2 && game.ball.x - game.ball.r < game.keeper.x + game.keeper.w / 2;
+        const inY = game.ball.y > game.keeper.y - game.keeper.h / 2 && game.ball.y < game.keeper.y + game.keeper.h / 2;
+        if (inX && inY) {
+          game.saves++;
+          game.ball.vx *= -0.7;
+          game.ball.vy += (game.ball.y - game.keeper.y) * 2.2;
+          uiMessage('Saved by the keeper!', 1.2);
+        }
+
+        // Goal area
+        const goalTop = 190;
+        const goalBottom = 350;
+        if (game.ball.x > 930 && game.ball.y > goalTop && game.ball.y < goalBottom) {
+          game.score++;
+          uiMessage('GOAL! ⚽', 1.5);
+          resetBall();
+        }
+
+        // Out of play
+        if (game.ball.x < -20 || game.ball.x > 980) {
+          resetBall();
+        }
+      }
+
+      // Keeper steals attached ball if close and no shield
+      if (game.ball.attached && game.skillState.shieldDribble <= 0) {
+        const dx = game.player.x - game.keeper.x;
+        const dy = game.player.y - game.keeper.y;
+        if (Math.hypot(dx, dy) < 55) {
+          game.saves++;
+          uiMessage('Keeper tackled you!');
+          resetBall();
+        }
+      }
+
+      if (game.messageTimer > 0) {
+        game.messageTimer -= dt;
+      } else if (!game.over) {
+        msgEl.textContent = 'Move with arrows/WASD, press Space to shoot.';
+      }
+
+      scoreEl.textContent = game.score;
+      shotsEl.textContent = game.shots;
+      savesEl.textContent = game.saves;
+      timeEl.textContent = Math.ceil(game.timeLeft);
+      renderSkillButtons();
+    }
+
+    function drawPitch() {
+      ctx.fillStyle = '#0b3a1c';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // stripes
+      for (let i = 0; i < 10; i++) {
+        ctx.fillStyle = i % 2 ? '#0a3419' : '#114d24';
+        ctx.fillRect(i * 96, 0, 96, canvas.height);
+      }
+
+      ctx.strokeStyle = '#d5efd0';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(18, 18, canvas.width - 36, canvas.height - 36);
+
+      // center circle
+      ctx.beginPath();
+      ctx.arc(canvas.width / 2, canvas.height / 2, 72, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // penalty and goal box
+      ctx.strokeRect(760, 140, 182, 260);
+      ctx.strokeRect(870, 190, 72, 160);
+
+      // goal posts
+      ctx.fillStyle = '#efefef';
+      ctx.fillRect(942, 184, 12, 8);
+      ctx.fillRect(942, 348, 12, 8);
+      ctx.fillRect(950, 184, 4, 172);
+    }
+
+    function drawEntities() {
+      // player
+      ctx.fillStyle = '#43d1ff';
+      ctx.beginPath();
+      ctx.arc(game.player.x, game.player.y, game.player.r, 0, Math.PI * 2);
+      ctx.fill();
+
+      // skill aura
+      if (game.skillState.sprintBurst > 0 || game.skillState.shieldDribble > 0) {
+        ctx.strokeStyle = game.skillState.shieldDribble > 0 ? '#e6ff7d' : '#8efaf8';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(game.player.x, game.player.y, game.player.r + 9, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // keeper
+      ctx.fillStyle = game.skillState.timeFreeze > 0 ? '#9fa2ac' : '#ff7f50';
+      ctx.fillRect(game.keeper.x - game.keeper.w / 2, game.keeper.y - game.keeper.h / 2, game.keeper.w, game.keeper.h);
+
+      // ball
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(game.ball.x, game.ball.y, game.ball.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#0f0f0f';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    let previous = performance.now();
+    function tick(now) {
+      const dt = Math.min(0.033, (now - previous) / 1000);
+      previous = now;
+      update(dt);
+      drawPitch();
+      drawEntities();
+      requestAnimationFrame(tick);
+    }
+
+    document.addEventListener('keydown', e => {
+      const key = e.key.toLowerCase();
+      keys.add(key);
+      if (key === ' ') {
+        e.preventDefault();
+        shootBall();
+      }
+      const mapped = skills.find(s => s.key === key);
+      if (mapped) triggerSkill(mapped.id);
+      if (key === 'r' && game.over) {
+        game.score = 0;
+        game.shots = 0;
+        game.saves = 0;
+        game.timeLeft = 90;
+        game.over = false;
+        uiMessage('New match started!');
+        resetBall();
+      }
+    });
+
+    document.addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
+
+    resetBall();
+    renderSkillButtons();
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>
